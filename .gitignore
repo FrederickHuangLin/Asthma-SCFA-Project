@@ -38,9 +38,13 @@ vignettes/*.pdf
 # R Environment Variables
 .Renviron
 
-# Do not syn the data folder
+# Do not sync the data folder
 /data/
 
 # Ignore R Markdown caches
 *_cache/
 *_files/
+
+# Ignore html files
+.html
+

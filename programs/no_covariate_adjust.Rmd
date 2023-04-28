@@ -1,5 +1,6 @@
 ---
 title: "A study of changes in short chain fatty acids (SCFA) in women during pregnancy whose children developed asthma"
+subtitle: "Without covariate adjustment"
 author: 
   - Huang Lin$^1$
   - $^1$BCBB, NIEHS
@@ -20,6 +21,7 @@ options(qwraps2_markup = "markdown",
 
 library(openxlsx)
 library(tidyverse) 
+library(vegan)
 library(CLME)
 library(magrittr)
 library(qwraps2)
@@ -39,28 +41,34 @@ plot_box = function(data, group_lab, group_var, key_var, adjust_var, title, y.po
   df_fig = data %>%
     dplyr::select(select_vars()) %>%
     mutate(group = get(group_var), value = get(key_var))
-  df_fig$group = factor(df_fig$group, ordered = FALSE)
-  
-  lm_formula = paste("value ~ group + ", paste(adjust_var, collapse = " + "))
-  lm_fit = lm(as.formula(lm_formula), data = df_fig)
-  df_p = data.frame(group1 = "No", group2 = "Yes",
-                    p = summary(lm_fit)$coef[grepl("group", names(coef(lm_fit))), "Pr(>|t|)"]) %>%
-    mutate(p = round(p, 2))
   
   bxp = ggboxplot(df_fig, x = "group", y = "value", color = "group",
                   add = "jitter", xlab = FALSE, ylab = FALSE, title = title) +
-    stat_pvalue_manual(df_p, y.position = y.position, 
-                       step.increase = step.increase, label = "p") +
-    scale_color_npg(name = NULL) +
+    scale_color_npg(name = str_to_title(group_var)) +
     theme(axis.text.x = element_blank(),
           axis.ticks.x = element_blank(),
           strip.background = element_rect(fill = "white"),
           legend.position = "bottom",
           plot.title = element_text(hjust = 0.5))
+  
+  if (!is.null(adjust_var)) {
+    lm_formula = paste("value ~ group + ", paste(adjust_var, collapse = " + "))
+    lm_fit = lm(as.formula(lm_formula), data = df_fig)
+    df_p = data.frame(group1 = "No", group2 = "Yes",
+                      p = summary(lm_fit)$coef[grepl("group", names(coef(lm_fit))), "Pr(>|t|)"]) %>%
+      mutate(p = round(p, 2))
+    
+    bxp = bxp + 
+      stat_pvalue_manual(df_p, y.position = y.position, 
+                         step.increase = step.increase, label = "p")
+  } else {
+    bxp = bxp + 
+      stat_compare_means(method = "wilcox.test", label.x = 1.5, label = "p.format")
+  }
   return(bxp)
 }
 
-plot_clme = function(clme_obj, group, y_min, y_max, p_gap, ...) {
+plot_clme = function(clme_obj, group, y_min, y_max, p_gap, fill_lab = "Wheezing", ...) {
   p_val = clme_obj$p.value
   est_mean = clme_obj$theta[group]
   est_se = sqrt(diag(clme_obj$cov.theta))[group]
@@ -104,7 +112,7 @@ plot_clme = function(clme_obj, group, y_min, y_max, p_gap, ...) {
                ...) +
     ylim(y_min, y_max) +
     theme_bw() +
-    scale_fill_npg(name = NULL) +
+    scale_fill_npg(name = fill_lab) +
     theme(panel.border = element_blank(),
           panel.grid.major = element_blank(),
           panel.grid.minor = element_blank(),
@@ -166,14 +174,13 @@ fisher_z = function(data, var1, var2, group) {
 }
 ```
 
-# 1. Data description {.tabset}
-
-## Import data
+# 1. Import data 
 
 ```{r}
 df_meta = read.xlsx("../data/eager_scfa_samples_matched.xlsx")
 df_meta$visit = recode(df_meta$visit, R = "20wks", S = "28wks")
 df_meta$wheezing = recode(df_meta$wheezing, `0` = "No", `1` = "Yes")
+df_meta$wheezing = factor(df_meta$wheezing)
 df_meta$education = factor(df_meta$education,
                            levels = c("Not High-school graduate",
                                       "High-school graduate",
@@ -186,20 +193,66 @@ df_scfa_raw = read.xlsx("../data/Short-Chain Fatty Acid Analysis Result_Creative
 df_loq = df_scfa_raw[3:9, 13:14]
 colnames(df_loq) = c("SCFA", "LOQ")
 
-df_scfa = df_scfa_raw[-1, 1:12]
-colnames(df_scfa) = c("Sample", "Barcode1", "Barcode2", "Box_Id", "Sample_Type",
-                      "Acetic", "Propionic", "Isobutyric", "Butyric", 
-                      "Isovaleric", "Valeric", "Hexanoic")
-df_scfa = df_scfa %>%
-  mutate_at(vars(Acetic:Hexanoic), as.numeric) %>%
+df_scfa_na = df_scfa_raw[-1, 1:12]
+colnames(df_scfa_na) = c("Sample", "Barcode1", "Barcode2", "Box_Id", "Sample_Type",
+                         "Acetic", "Propionic", "Isobutyric", "Butyric",
+                         "Isovaleric", "Valeric", "Hexanoic")
+df_scfa_na = df_scfa_na %>%
+  mutate_at(vars(Acetic:Hexanoic), as.numeric)
+df_merge_na = df_meta %>%
+  dplyr::left_join(df_scfa_na, by = c("Barcode1", "Barcode2", "Box_Id"))
+```
+
+# 2. Descriptive statistics {.tabset}
+
+## Presence/absecence
+
+1. Hexanoic is not available except one sample. Thus, it will be removed from the downstream analysis
+
+2. For the remaining SCFAs, the missing value will be replaced by half of its corresponding LOQ
+
+```{r, results='asis'}
+summary_template1 =
+  list("Acetic" =
+         list("Above LOQ" = ~ n_perc0(!is.na(Acetic)),
+              "Below LOQ" = ~ n_perc0(is.na(Acetic))),
+       "Propionic" =
+         list("Above LOQ" = ~ n_perc0(!is.na(Propionic)),
+              "Below LOQ" = ~ n_perc0(is.na(Propionic))),
+       "Isobutyric" =
+         list("Above LOQ" = ~ n_perc0(!is.na(Isobutyric)),
+              "Below LOQ" = ~ n_perc0(is.na(Isobutyric))),
+       "Butyric" =
+         list("Above LOQ" = ~ n_perc0(!is.na(Butyric)),
+              "Below LOQ" = ~ n_perc0(is.na(Butyric))),
+       "Isovaleric" =
+         list("Above LOQ" = ~ n_perc0(!is.na(Isovaleric)),
+              "Below LOQ" = ~ n_perc0(is.na(Isovaleric))),
+       "Valeric" =
+         list("Above LOQ" = ~ n_perc0(!is.na(Valeric)),
+              "Below LOQ" = ~ n_perc0(is.na(Valeric))),
+       "Hexanoic" =
+         list("Above LOQ" = ~ n_perc0(!is.na(Hexanoic)),
+              "Below LOQ" = ~ n_perc0(is.na(Hexanoic)))
+       )
+
+df_summ1 = df_merge_na %>%
+  summary_table(summary_template1)
+df_summ2 = df_merge_na %>%
+  group_by(visit) %>%
+  summary_table(summary_template1)
+cbind(df_summ2, df_summ1)
+```
+
+```{r}
+df_scfa = df_scfa_na %>%
   replace_na(list(Acetic = df_loq$LOQ[1]/2,
                   Propionic = df_loq$LOQ[2]/2,
                   Isobutyric = df_loq$LOQ[3]/2,
                   Butyric = df_loq$LOQ[4]/2,
                   Isovaleric = df_loq$LOQ[5]/2,
-                  Valeric = df_loq$LOQ[6]/2,
-                  Hexanoic = df_loq$LOQ[7]/2))
-
+                  Valeric = df_loq$LOQ[6]/2)) %>%
+  dplyr::mutate(total = rowSums(across(Acetic:Valeric)))
 df_merge = df_meta %>%
   dplyr::left_join(df_scfa, by = c("Barcode1", "Barcode2", "Box_Id"))
 df_v1 = df_merge %>%
@@ -208,10 +261,10 @@ df_v2 = df_merge %>%
   filter(visit == "28wks")
 ```
 
-## Data overview
+## Table 1
 
 ```{r, results='asis'}
-summary_template =
+summary_template2 =
   list("Any report of asthma or wheezing since birth" =
        list("No" = ~ n_perc0(wheezing == "No", na_rm = TRUE),
             "Yes" = ~ n_perc0(wheezing == "Yes", na_rm = TRUE),
@@ -263,41 +316,140 @@ summary_template =
        "Valeric" =
          list("min" = ~ round(min(Valeric, na.rm = T), 2),
               "max" = ~ round(max(Valeric, na.rm = T), 2),
-              "mean (sd)" = ~ qwraps2::mean_sd(Valeric, na_rm = T, show_n = "never")),
-       "Hexanoic" =
-         list("min" = ~ round(min(Hexanoic, na.rm = T), 2),
-              "max" = ~ round(max(Hexanoic, na.rm = T), 2),
-              "mean (sd)" = ~ qwraps2::mean_sd(Hexanoic, na_rm = T, show_n = "never"))
+              "mean (sd)" = ~ qwraps2::mean_sd(Valeric, na_rm = T, show_n = "never"))
        )
 
 df_summ1 = df_merge %>%
-  summary_table(summary_template)
+  summary_table(summary_template2)
 df_summ2 = df_merge %>%
   group_by(visit) %>%
-  summary_table(summary_template)
+  summary_table(summary_template2)
 cbind(df_summ2, df_summ1)
 ```
 
-# 2. Two-group comparisons
+## Total SCFA concentrations by groups
+
+### At 20 weeks
+
+```{r}
+p_total = ggviolin(df_v1, x = "wheezing", y = "total", color = "wheezing",
+                   add = "boxplot", xlab = "Wheezing", ylab = "Total SCFAs") +
+  stat_compare_means(method = "wilcox.test", label.x = 1.5, label = "p.format") +
+  scale_color_npg(name = NULL)
+p_total
+ggsave("../figures/no_covariate_adjust/violine_total_v1.jpeg", width = 6.25, height = 5, dpi = 100)
+ggsave("../figures/no_covariate_adjust/violine_total_v1.pdf", width = 6.25, height = 5)
+```
+
+### At 28 weeks
+
+```{r}
+p_total = ggviolin(df_v2, x = "wheezing", y = "total", color = "wheezing",
+                   add = "boxplot", xlab = "Wheezing", ylab = "Total SCFAs") +
+  stat_compare_means(method = "wilcox.test", label.x = 1.5, label = "p.format") +
+  scale_color_npg(name = NULL)
+p_total
+ggsave("../figures/no_covariate_adjust/violine_total_v2.jpeg", width = 6.25, height = 5, dpi = 100)
+ggsave("../figures/no_covariate_adjust/violine_total_v2.pdf", width = 6.25, height = 5)
+```
+
+## SCFA change over time (28 weeks - 20 weeks)
+
+```{r, fig.width=10, fig.height=6}
+df_pair = df_v1 %>%
+  dplyr::select(Study_ID, Acetic:Valeric) %>%
+  dplyr::inner_join(
+    df_v2 %>%
+      dplyr::select(Study_ID, Acetic:Valeric),
+    suffix = c("_v1", "_v2"),
+    by = "Study_ID"
+  ) %>%
+  dplyr::mutate(across(ends_with("_v2"),
+                       ~ . - get(str_replace(cur_column(), "_v2$", "_v1")),
+                       .names = "diff_{str_replace(.col, '_v2$', '')}")) %>%
+  dplyr::left_join(df_v1 %>%
+                     dplyr::select(Study_ID, wheezing),
+                   by = "Study_ID")
+
+var_list = c("Acetic", "Propionic", "Isobutyric", 
+             "Butyric", "Isovaleric", "Valeric")
+title_list = c("Acetic Acid", "Propionic Acid", "Isobutyric Acid", 
+               "Butyric Acid", "Isovaleric Acid", "Valeric Acid")
+y_pos_list = c(6, 0.5, 0.1, 0.25, 0.09, 0.015)
+step_list = c(0.1, 0.1, 0.1, 0.1, 0.01, 0.005)
+
+bxp_list = list()
+for (i in seq_along(var_list)) {
+  var = paste0("diff_", var_list[[i]])
+  title = title_list[[i]]
+  df = df_pair %>%
+    dplyr::transmute(value = get(var), group = wheezing)
+  bxp = df %>%
+    ggboxplot(x = "group", y = "value", color = "group",
+              add = "jitter", xlab = FALSE, ylab = FALSE, title = title) +
+    stat_compare_means(method = "wilcox.test", label.x = 1.5, label = "p.format") +
+    scale_color_npg(name = "Wheezing") +
+    theme(axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          strip.background = element_rect(fill = "white"),
+          legend.position = "bottom",
+          plot.title = element_text(hjust = 0.5))
+    
+  bxp_list[[i]] = bxp
+}
+
+p_box = ggarrange(bxp_list[[1]], bxp_list[[2]], bxp_list[[3]], 
+                  bxp_list[[4]], bxp_list[[5]], bxp_list[[6]], 
+                  ncol = 3, nrow = 2, 
+                  common.legend = TRUE, legend = "bottom")
+p_box
+ggsave("../figures/no_covariate_adjust/box_plot_time_change.jpeg", width = 10, height = 6, dpi = 100)
+ggsave("../figures/no_covariate_adjust/box_plot_time_change.pdf", width = 10, height = 6)
+```
+
+## Alpha diversities
+
+```{r}
+shannon_index = diversity(df_merge %>%
+                            dplyr::select(Acetic:Valeric))
+df_shannon = df_merge %>%
+  dplyr::select(Study_ID, wheezing, visit) %>%
+  dplyr::mutate(shannon_index = shannon_index)
+
+p_box_alpha = df_shannon %>% 
+  ggboxplot(x = "wheezing", y = "shannon_index", color = "wheezing", 
+            facet.by = "visit", xlab = "Wheezing", ylab = "Shannon Index",
+            add = "jitter") +
+  stat_compare_means(method = "wilcox.test", label.x = 1.5, label = "p.format") +
+  scale_color_npg(name = NULL)
+
+p_box_alpha
+ggsave("../figures/no_covariate_adjust/box_plot_alpha.jpeg", width = 6.25, height = 5, dpi = 100)
+ggsave("../figures/no_covariate_adjust/box_plot_alpha.pdf", width = 6.25, height = 5)
+```
+
+# 3. Two-group comparisons
 
 1. SCFAs by the outcome variable (any report of asthma or wheezing since birth).
 
 2. P-values were determined by two-sided Wilcoxon rank sum test.
 
+3. Subfigure a: at 20 weeks, subfigure b: at 28 weeks.
+
 ```{r, fig.width=14, fig.height=10}
-var_list = c("Acetic", "Propionic", "Isobutyric", "Butyric", 
-             "Isovaleric", "Valeric", "Hexanoic")
-title_list = c("Acetic Acid", "Propionic Acid", "Isobutyric Acid", "Butyric Acid", 
-               "Isovaleric Acid", "Valeric Acid", "Hexanoic Acid")
-y_pos_list = c(6, 0.5, 0.1, 0.25, 0.09, 0.015, 0.1)
-step_list = c(0.1, 0.1, 0.1, 0.1, 0.01, 0.005, 0.01)
+var_list = c("Acetic", "Propionic", "Isobutyric", 
+             "Butyric", "Isovaleric", "Valeric")
+title_list = c("Acetic Acid", "Propionic Acid", "Isobutyric Acid", 
+               "Butyric Acid", "Isovaleric Acid", "Valeric Acid")
+y_pos_list = c(6, 0.5, 0.1, 0.25, 0.09, 0.015)
+step_list = c(0.1, 0.1, 0.1, 0.1, 0.01, 0.005)
 
 bxp_list_v1 = list()
 for (i in seq_along(var_list)) {
   bxp = plot_box(data = df_v1,
                  group_var = "wheezing",
                  key_var = var_list[i], 
-                 adjust_var = c("BMI", "age", "income", "sex_fetus1", "education"),
+                 adjust_var = NULL,
                  title = title_list[i],
                  y.position = y_pos_list[i], 
                  step.increase = step_list[i])
@@ -309,7 +461,7 @@ for (i in seq_along(var_list)) {
   bxp = plot_box(data = df_v2,
                  group_var = "wheezing",
                  key_var = var_list[i], 
-                 adjust_var = c("BMI", "age", "income", "sex_fetus1", "education"),
+                 adjust_var = NULL,
                  title = title_list[i],
                  y.position = y_pos_list[i], 
                  step.increase = step_list[i])
@@ -317,19 +469,19 @@ for (i in seq_along(var_list)) {
 }
 
 p_box = ggarrange(bxp_list_v1[[1]], bxp_list_v1[[2]], bxp_list_v1[[3]], 
-                  bxp_list_v1[[4]], bxp_list_v1[[5]], bxp_list_v1[[6]], bxp_list_v1[[7]], 
+                  bxp_list_v1[[4]], bxp_list_v1[[5]], bxp_list_v1[[6]], 
                   bxp_list_v2[[1]], bxp_list_v2[[2]], bxp_list_v2[[3]], 
-                  bxp_list_v2[[4]], bxp_list_v2[[5]], bxp_list_v2[[6]], bxp_list_v2[[7]],
-                  ncol = 7, nrow = 2, 
+                  bxp_list_v2[[4]], bxp_list_v2[[5]], bxp_list_v2[[6]], 
+                  ncol = 6, nrow = 2, 
                   labels = c("a", "", "", "", "", "", "",
                              "b", "", "", "", "", "", ""), 
                   common.legend = TRUE, legend = "bottom")
 p_box
-ggsave("../figures/box_plot.jpeg", width = 14, height = 10, dpi = 100)
-ggsave("../figures/box_plot.pdf", width = 14, height = 10)
+ggsave("../figures/no_covariate_adjust/box_plot.jpeg", width = 12, height = 10, dpi = 100)
+ggsave("../figures/no_covariate_adjust/box_plot.pdf", width = 12, height = 10)
 ```
 
-# 3. Trend test {.tabset}
+# 4. Trend test
 
 1. SCFAs by the outcome variable (any report of asthma or wheezing since birth).
 
@@ -340,32 +492,25 @@ df_merge$wheezing = factor(df_merge$wheezing, ordered = TRUE,
                            levels = c("No", "Yes"))
 ```
 
-## Monotonic increasing trend
+## 4.1 At 20 weeks {.tabset}
 
-```{r, fig.width=14, cache=TRUE}
+### Monotonic increasing trend
+
+```{r, fig.width=12, cache=TRUE}
 cons = list(order = "simple", decreasing = FALSE, node = 1)
 
-fit1 = clme(Acetic ~ wheezing + BMI + age + income + sex_fetus1 + education +
-              (1 | Study_ID), 
-            data = df_merge, constraints = cons, seed = 123)
-fit2 = clme(Propionic ~ wheezing + BMI + age + income + sex_fetus1 + education +
-              (1 | Study_ID), 
-            data = df_merge, constraints = cons, seed = 123)
-fit3 = clme(Isobutyric ~ wheezing + BMI + age + income + sex_fetus1 + education +
-              (1 | Study_ID), 
-            data = df_merge, constraints = cons, seed = 123)
-fit4 = clme(Butyric ~ wheezing + BMI + age + income + sex_fetus1 + education +
-              (1 | Study_ID), 
-            data = df_merge, constraints = cons, seed = 123)
-fit5 = clme(Isovaleric ~ wheezing + BMI + age + income + sex_fetus1 + education +
-              (1 | Study_ID), 
-            data = df_merge, constraints = cons, seed = 123)
-fit6 = clme(Valeric ~ wheezing + BMI + age + income + sex_fetus1 + education +
-              (1 | Study_ID), 
-            data = df_merge, constraints = cons, seed = 123)
-fit7 = clme(Hexanoic ~ wheezing + BMI + age + income + sex_fetus1 + education +
-              (1 | Study_ID), 
-            data = df_merge, constraints = cons, seed = 123)
+fit1 = clme(Acetic ~ wheezing, 
+            data = df_v1, constraints = cons, seed = 123)
+fit2 = clme(Propionic ~ wheezing, 
+            data = df_v1, constraints = cons, seed = 123)
+fit3 = clme(Isobutyric ~ wheezing, 
+            data = df_v1, constraints = cons, seed = 123)
+fit4 = clme(Butyric ~ wheezing, 
+            data = df_v1, constraints = cons, seed = 123)
+fit5 = clme(Isovaleric ~ wheezing, 
+            data = df_v1, constraints = cons, seed = 123)
+fit6 = clme(Valeric ~ wheezing, 
+            data = df_v1, constraints = cons, seed = 123)
 
 summ_fit1 = summary(fit1)
 summ_fit2 = summary(fit2)
@@ -373,63 +518,50 @@ summ_fit3 = summary(fit3)
 summ_fit4 = summary(fit4)
 summ_fit5 = summary(fit5)
 summ_fit6 = summary(fit6)
-summ_fit7 = summary(fit7)
 
 fig1 = plot_clme(summ_fit1, group = c("No", "Yes"), 
-                 y_min = 0, y_max = 4, p_gap = 1.2) +
+                 y_min = 0, y_max = 4.5, p_gap = 1.2) +
   labs(x = NULL, y = "Concentration", title = "Acetic Acid")
 fig2 = plot_clme(summ_fit2, group = c("No", "Yes"), 
-                 y_min = -0.1, y_max = 0.5, p_gap = 0.3) +
+                 y_min = -0.2, y_max = 0.5, p_gap = 0.3) +
   labs(x = NULL, y = "Concentration", title = "Propionic Acid")
 fig3 = plot_clme(summ_fit3, group = c("No", "Yes"), 
-                 y_min = -0.1, y_max = 0.4, p_gap = 0.2) +
+                 y_min = -0.2, y_max = 0.4, p_gap = 0.25) +
   labs(x = NULL, y = "Concentration", title = "Isobutyric Acid")
 fig4 = plot_clme(summ_fit4, group = c("No", "Yes"), 
-                 y_min = 0, y_max = 0.4, p_gap = 0.2) +
+                 y_min = 0, y_max = 0.35, p_gap = 0.15) +
   labs(x = NULL, y = "Concentration", title = "Butyric Acid")
 fig5 = plot_clme(summ_fit5, group = c("No", "Yes"),
-                 y_min = 0, y_max = 0.15, p_gap = 0.05) +
+                 y_min = 0, y_max = 0.12, p_gap = 0.05) +
   labs(x = NULL, y = "Concentration", title = "Isovaleric Acid")
 fig6 = plot_clme(summ_fit6, group = c("No", "Yes"), 
-                 y_min = -0.01, y_max = 0.03, p_gap = 0.01) +
+                 y_min = -0.01, y_max = 0.02, p_gap = 0.01) +
   labs(x = NULL, y = "Concentration", title = "Valeric Acid")
-fig7 = plot_clme(summ_fit7, group = c("No", "Yes"), 
-                 y_min = -4, y_max = 5, p_gap = 4) +
-  labs(x = NULL, y = "Concentration", title = "Hexanoic Acid")
 
-p_clme1 = ggarrange(fig1, fig2, fig3, fig4, fig5, fig6, fig7,
-                    ncol = 7, common.legend = TRUE, legend = "bottom")
+p_clme1 = ggarrange(fig1, fig2, fig3, fig4, fig5, fig6, 
+                    ncol = 6, common.legend = TRUE, legend = "bottom")
 p_clme1
-ggsave("../figures/clme_plot1.jpeg", width = 14, height = 5, dpi = 100)
-ggsave("../figures/clme_plot1.pdf", width = 14, height = 5)
+ggsave("../figures/no_covariate_adjust/clme_plot_v1_increase.jpeg", width = 12, height = 5, dpi = 100)
+ggsave("../figures/no_covariate_adjust/clme_plot_v1_increase.pdf", width = 12, height = 5)
 ```
 
-## Monotonic decreasing trend
+### Monotonic decreasing trend
 
-```{r, fig.width=14, cache=TRUE}
+```{r, fig.width=12, cache=TRUE}
 cons = list(order = "simple", decreasing = TRUE, node = 1)
 
-fit1 = clme(Acetic ~ wheezing + BMI + age + income + sex_fetus1 + education +
-              (1 | Study_ID), 
-            data = df_merge, constraints = cons, seed = 123)
-fit2 = clme(Propionic ~ wheezing + BMI + age + income + sex_fetus1 + education +
-              (1 | Study_ID), 
-            data = df_merge, constraints = cons, seed = 123)
-fit3 = clme(Isobutyric ~ wheezing + BMI + age + income + sex_fetus1 + education +
-              (1 | Study_ID), 
-            data = df_merge, constraints = cons, seed = 123)
-fit4 = clme(Butyric ~ wheezing + BMI + age + income + sex_fetus1 + education +
-              (1 | Study_ID), 
-            data = df_merge, constraints = cons, seed = 123)
-fit5 = clme(Isovaleric ~ wheezing + BMI + age + income + sex_fetus1 + education +
-              (1 | Study_ID), 
-            data = df_merge, constraints = cons, seed = 123)
-fit6 = clme(Valeric ~ wheezing + BMI + age + income + sex_fetus1 + education +
-              (1 | Study_ID), 
-            data = df_merge, constraints = cons, seed = 123)
-fit7 = clme(Hexanoic ~ wheezing + BMI + age + income + sex_fetus1 + education +
-              (1 | Study_ID), 
-            data = df_merge, constraints = cons, seed = 123)
+fit1 = clme(Acetic ~ wheezing, 
+            data = df_v1, constraints = cons, seed = 123)
+fit2 = clme(Propionic ~ wheezing, 
+            data = df_v1, constraints = cons, seed = 123)
+fit3 = clme(Isobutyric ~ wheezing, 
+            data = df_v1, constraints = cons, seed = 123)
+fit4 = clme(Butyric ~ wheezing, 
+            data = df_v1, constraints = cons, seed = 123)
+fit5 = clme(Isovaleric ~ wheezing, 
+            data = df_v1, constraints = cons, seed = 123)
+fit6 = clme(Valeric ~ wheezing, 
+            data = df_v1, constraints = cons, seed = 123)
 
 summ_fit1 = summary(fit1)
 summ_fit2 = summary(fit2)
@@ -437,38 +569,138 @@ summ_fit3 = summary(fit3)
 summ_fit4 = summary(fit4)
 summ_fit5 = summary(fit5)
 summ_fit6 = summary(fit6)
-summ_fit7 = summary(fit7)
 
 fig1 = plot_clme(summ_fit1, group = c("No", "Yes"), 
-                 y_min = 0, y_max = 4, p_gap = 1.2) +
+                 y_min = 0, y_max = 4.5, p_gap = 1.2) +
   labs(x = NULL, y = "Concentration", title = "Acetic Acid")
 fig2 = plot_clme(summ_fit2, group = c("No", "Yes"), 
-                 y_min = -0.1, y_max = 0.5, p_gap = 0.3) +
+                 y_min = -0.2, y_max = 0.5, p_gap = 0.3) +
   labs(x = NULL, y = "Concentration", title = "Propionic Acid")
 fig3 = plot_clme(summ_fit3, group = c("No", "Yes"), 
-                 y_min = -0.1, y_max = 0.4, p_gap = 0.2) +
+                 y_min = -0.2, y_max = 0.4, p_gap = 0.3) +
   labs(x = NULL, y = "Concentration", title = "Isobutyric Acid")
 fig4 = plot_clme(summ_fit4, group = c("No", "Yes"), 
-                 y_min = 0, y_max = 0.4, p_gap = 0.2) +
+                 y_min = 0, y_max = 0.35, p_gap = 0.15) +
   labs(x = NULL, y = "Concentration", title = "Butyric Acid")
 fig5 = plot_clme(summ_fit5, group = c("No", "Yes"),
-                 y_min = 0, y_max = 0.15, p_gap = 0.05) +
+                 y_min = 0, y_max = 0.12, p_gap = 0.05) +
   labs(x = NULL, y = "Concentration", title = "Isovaleric Acid")
 fig6 = plot_clme(summ_fit6, group = c("No", "Yes"), 
-                 y_min = -1, y_max = 1.2, p_gap = 1.1) +
+                 y_min = -0.01, y_max = 0.02, p_gap = 0.01) +
   labs(x = NULL, y = "Concentration", title = "Valeric Acid")
-fig7 = plot_clme(summ_fit7, group = c("No", "Yes"), 
-                 y_min = 0, y_max = 0.08, p_gap = 0.02) +
-  labs(x = NULL, y = "Concentration", title = "Hexanoic Acid")
 
-p_clme2 = ggarrange(fig1, fig2, fig3, fig4, fig5, fig6, fig7,
-                    ncol = 7, common.legend = TRUE, legend = "bottom")
+p_clme2 = ggarrange(fig1, fig2, fig3, fig4, fig5, fig6, 
+                    ncol = 6, common.legend = TRUE, legend = "bottom")
 p_clme2
-ggsave("../figures/clme_plot2.jpeg", width = 14, height = 5, dpi = 100)
-ggsave("../figures/clme_plot2.pdf", width = 14, height = 5)
+ggsave("../figures/no_covariate_adjust/clme_plot_v1_decrease.jpeg", width = 12, height = 5, dpi = 100)
+ggsave("../figures/no_covariate_adjust/clme_plot_v1_decrease.pdf", width = 12, height = 5)
 ```
 
-# 4. Correlations {.tabset}
+## 4.2 At 28 weeks {.tabset}
+
+### Monotonic increasing trend
+
+```{r, fig.width=12, cache=TRUE}
+cons = list(order = "simple", decreasing = FALSE, node = 1)
+
+fit1 = clme(Acetic ~ wheezing, 
+            data = df_v2, constraints = cons, seed = 123)
+fit2 = clme(Propionic ~ wheezing, 
+            data = df_v2, constraints = cons, seed = 123)
+fit3 = clme(Isobutyric ~ wheezing, 
+            data = df_v2, constraints = cons, seed = 123)
+fit4 = clme(Butyric ~ wheezing, 
+            data = df_v2, constraints = cons, seed = 123)
+fit5 = clme(Isovaleric ~ wheezing, 
+            data = df_v2, constraints = cons, seed = 123)
+fit6 = clme(Valeric ~ wheezing, 
+            data = df_v2, constraints = cons, seed = 123)
+
+summ_fit1 = summary(fit1)
+summ_fit2 = summary(fit2)
+summ_fit3 = summary(fit3)
+summ_fit4 = summary(fit4)
+summ_fit5 = summary(fit5)
+summ_fit6 = summary(fit6)
+
+fig1 = plot_clme(summ_fit1, group = c("No", "Yes"), 
+                 y_min = 0, y_max = 4.5, p_gap = 1.2) +
+  labs(x = NULL, y = "Concentration", title = "Acetic Acid")
+fig2 = plot_clme(summ_fit2, group = c("No", "Yes"), 
+                 y_min = -0.1, y_max = 0.6, p_gap = 0.3) +
+  labs(x = NULL, y = "Concentration", title = "Propionic Acid")
+fig3 = plot_clme(summ_fit3, group = c("No", "Yes"), 
+                 y_min = 0, y_max = 0.05, p_gap = 0.02) +
+  labs(x = NULL, y = "Concentration", title = "Isobutyric Acid")
+fig4 = plot_clme(summ_fit4, group = c("No", "Yes"), 
+                 y_min = 0, y_max = 0.35, p_gap = 0.15) +
+  labs(x = NULL, y = "Concentration", title = "Butyric Acid")
+fig5 = plot_clme(summ_fit5, group = c("No", "Yes"),
+                 y_min = 0, y_max = 0.08, p_gap = 0.03) +
+  labs(x = NULL, y = "Concentration", title = "Isovaleric Acid")
+fig6 = plot_clme(summ_fit6, group = c("No", "Yes"), 
+                 y_min = 0, y_max = 0.02, p_gap = 0.01) +
+  labs(x = NULL, y = "Concentration", title = "Valeric Acid")
+
+p_clme1 = ggarrange(fig1, fig2, fig3, fig4, fig5, fig6, 
+                    ncol = 6, common.legend = TRUE, legend = "bottom")
+p_clme1
+ggsave("../figures/no_covariate_adjust/clme_plot_v2_increase.jpeg", width = 12, height = 5, dpi = 100)
+ggsave("../figures/no_covariate_adjust/clme_plot_v2_increase.pdf", width = 12, height = 5)
+```
+
+### Monotonic decreasing trend
+
+```{r, fig.width=12, cache=TRUE}
+cons = list(order = "simple", decreasing = TRUE, node = 1)
+
+fit1 = clme(Acetic ~ wheezing, 
+            data = df_v2, constraints = cons, seed = 123)
+fit2 = clme(Propionic ~ wheezing, 
+            data = df_v2, constraints = cons, seed = 123)
+fit3 = clme(Isobutyric ~ wheezing, 
+            data = df_v2, constraints = cons, seed = 123)
+fit4 = clme(Butyric ~ wheezing, 
+            data = df_v2, constraints = cons, seed = 123)
+fit5 = clme(Isovaleric ~ wheezing, 
+            data = df_v2, constraints = cons, seed = 123)
+fit6 = clme(Valeric ~ wheezing, 
+            data = df_v2, constraints = cons, seed = 123)
+
+summ_fit1 = summary(fit1)
+summ_fit2 = summary(fit2)
+summ_fit3 = summary(fit3)
+summ_fit4 = summary(fit4)
+summ_fit5 = summary(fit5)
+summ_fit6 = summary(fit6)
+
+fig1 = plot_clme(summ_fit1, group = c("No", "Yes"), 
+                 y_min = 0, y_max = 4.5, p_gap = 1.4) +
+  labs(x = NULL, y = "Concentration", title = "Acetic Acid")
+fig2 = plot_clme(summ_fit2, group = c("No", "Yes"), 
+                 y_min = -0.1, y_max = 0.55, p_gap = 0.3) +
+  labs(x = NULL, y = "Concentration", title = "Propionic Acid")
+fig3 = plot_clme(summ_fit3, group = c("No", "Yes"), 
+                 y_min = 0, y_max = 0.05, p_gap = 0.02) +
+  labs(x = NULL, y = "Concentration", title = "Isobutyric Acid")
+fig4 = plot_clme(summ_fit4, group = c("No", "Yes"), 
+                 y_min = 0, y_max = 0.35, p_gap = 0.15) +
+  labs(x = NULL, y = "Concentration", title = "Butyric Acid")
+fig5 = plot_clme(summ_fit5, group = c("No", "Yes"),
+                 y_min = 0, y_max = 0.08, p_gap = 0.03) +
+  labs(x = NULL, y = "Concentration", title = "Isovaleric Acid")
+fig6 = plot_clme(summ_fit6, group = c("No", "Yes"), 
+                 y_min = 0, y_max = 0.02, p_gap = 0.01) +
+  labs(x = NULL, y = "Concentration", title = "Valeric Acid")
+
+p_clme2 = ggarrange(fig1, fig2, fig3, fig4, fig5, fig6, 
+                    ncol = 6, common.legend = TRUE, legend = "bottom")
+p_clme2
+ggsave("../figures/no_covariate_adjust/clme_plot_v2_decrease.jpeg", width = 12, height = 5, dpi = 100)
+ggsave("../figures/no_covariate_adjust/clme_plot_v2_decrease.pdf", width = 12, height = 5)
+```
+
+# 5. Correlations {.tabset}
 
 1. SCFAs correlations by the outcome variable (any report of asthma or wheezing since birth).
 
@@ -479,17 +711,17 @@ ggsave("../figures/clme_plot2.pdf", width = 14, height = 5)
 ## At 20 weeks
 
 ```{r, fig.width=10}
-scfa_list = c("Acetic", "Propionic", "Isobutyric", "Butyric", 
-              "Isovaleric", "Valeric", "Hexanoic")
-df_scfa = df_v1 %>%
+scfa_list = c("Acetic", "Propionic", "Isobutyric", 
+              "Butyric","Isovaleric", "Valeric")
+df_scfa_v1 = df_v1 %>%
   dplyr::select(wheezing, any_of(scfa_list))
 
-corr1 = cor(df_scfa %>%
+corr1 = cor(df_scfa_v1 %>%
               filter(wheezing == "No") %>%
               dplyr::select(-wheezing)) 
 corr1[is.na(corr1)] = 0
 
-corr2 = cor(df_scfa %>%
+corr2 = cor(df_scfa_v1 %>%
               filter(wheezing == "Yes") %>%
               dplyr::select(-wheezing)) 
 corr2[is.na(corr2)] = 0
@@ -501,7 +733,7 @@ for (i in seq_along(scfa_list[-1])) {
   scfa1 = scfa_list[i]
   for (j in seq.int(from = i + 1, to = length(scfa_list))) {
     scfa2 = scfa_list[j]
-    p_val = fisher_z(data = df_scfa, var1 = scfa1, var2 = scfa2, group = "wheezing")
+    p_val = fisher_z(data = df_scfa_v1, var1 = scfa1, var2 = scfa2, group = "wheezing")
     if (is.na(p_val)) p_val = 0
     mat_p_v1[i, j] = p_val
   }
@@ -550,15 +782,15 @@ p_heat2 = df_corr2 %>%
 
 p_heat_v1 = ggarrange(p_heat1, p_heat2, common.legend = TRUE, legend = "right")
 p_heat_v1
-ggsave("../figures/heatmap_v1.jpeg", width = 10, height = 5, dpi = 100)
-ggsave("../figures/heatmap_v1.pdf", width = 10, height = 5)
+ggsave("../figures/no_covariate_adjust/heatmap_v1.jpeg", width = 10, height = 5, dpi = 100)
+ggsave("../figures/no_covariate_adjust/heatmap_v1.pdf", width = 10, height = 5)
 ```
 
 ## At 28 weeks
 
 ```{r, fig.width=10}
-scfa_list = c("Acetic", "Propionic", "Isobutyric", "Butyric", 
-              "Isovaleric", "Valeric", "Hexanoic")
+scfa_list = c("Acetic", "Propionic", "Isobutyric", 
+              "Butyric", "Isovaleric", "Valeric")
 df_scfa = df_v2 %>%
   dplyr::select(wheezing, any_of(scfa_list))
 
@@ -628,8 +860,8 @@ p_heat2 = df_corr2 %>%
 
 p_heat_v2 = ggarrange(p_heat1, p_heat2, common.legend = TRUE, legend = "right")
 p_heat_v2
-ggsave("../figures/heatmap_v2.jpeg", width = 10, height = 5, dpi = 100)
-ggsave("../figures/heatmap_v2.pdf", width = 10, height = 5)
+ggsave("../figures/no_covariate_adjust/heatmap_v2.jpeg", width = 10, height = 5, dpi = 100)
+ggsave("../figures/no_covariate_adjust/heatmap_v2.pdf", width = 10, height = 5)
 ```
 
 # Session information
