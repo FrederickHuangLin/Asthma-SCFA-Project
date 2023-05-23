@@ -27,6 +27,7 @@ library(ggsci)
 library(ggpubr)
 library(rstatix)
 library(jtools)
+library(cocor)
 ```
 
 ```{r helper}
@@ -213,6 +214,10 @@ df_v1 = df_merge %>%
   filter(visit == "20wks")
 df_v2 = df_merge %>%
   filter(visit == "28wks")
+df_no = df_merge %>%
+  filter(wheezing == "No")
+df_yes = df_merge %>%
+  filter(wheezing == "Yes")
 ```
 
 # 2. Descriptive statistics {.tabset}
@@ -755,146 +760,212 @@ ggsave("../results/figures/main_clme_plot_v2_decrease.pdf", width = 12, height =
 
 1. SCFAs correlations by the outcome variable (any report of asthma or wheezing since birth).
 
-2. Fisher's z-transformation was used to determine whether two Pearson correlation coefficients are the same or not. 
+2. Fisher's z test was used to determine whether two Pearson correlation coefficients are the same or not between groups at the same time point. 
 
-3. Only entries with p-value < 0.05 (correlations that were significantly different between "wheezing = No" and "wheezing = Yes") were shown.
+3. Steiger’s z test was used to determine whether two Pearson correlation coefficients are the same or not between time points within the same group.
 
-## At 20 weeks
+## Correlations
 
-```{r, fig.width=10}
+```{r}
 scfa_list = c("Acetic", "Propionic", "Isobutyric", 
               "Butyric","Isovaleric", "Valeric")
 df_scfa_v1 = df_v1 %>%
   dplyr::select(wheezing, any_of(scfa_list))
+df_scfa_v2 = df_v2 %>%
+  dplyr::select(wheezing, any_of(scfa_list))
 
-corr1 = cor(df_scfa_v1 %>%
-              filter(wheezing == "No") %>%
-              dplyr::select(-wheezing)) 
-corr1[is.na(corr1)] = 0
+# Visit 1, No
+corr_v1_no = cor(df_scfa_v1 %>%
+                   filter(wheezing == "No") %>%
+                   dplyr::select(-wheezing)) 
+corr_v1_no[is.na(corr_v1_no)] = 0
+df_corr_v1_no = as.data.frame(corr_v1_no) %>%
+  rownames_to_column("var1") %>%
+  pivot_longer(cols = -var1, names_to = "var2", values_to = "value")
 
-corr2 = cor(df_scfa_v1 %>%
-              filter(wheezing == "Yes") %>%
-              dplyr::select(-wheezing)) 
-corr2[is.na(corr2)] = 0
+# Visit 1, Yes
+corr_v1_yes = cor(df_scfa_v1 %>%
+                    filter(wheezing == "Yes") %>%
+                    dplyr::select(-wheezing)) 
+corr_v1_yes[is.na(corr_v1_yes)] = 0
+df_corr_v1_yes = as.data.frame(corr_v1_yes) %>%
+  rownames_to_column("var1") %>%
+  pivot_longer(cols = -var1, names_to = "var2", values_to = "value")
 
-mat_p_v1 = matrix(NA, nrow = length(scfa_list), ncol = length(scfa_list))
+# Visit 2, No
+corr_v2_no = cor(df_scfa_v2 %>%
+                   filter(wheezing == "No") %>%
+                   dplyr::select(-wheezing)) 
+corr_v2_no[is.na(corr_v2_no)] = 0
+df_corr_v2_no = as.data.frame(corr_v2_no) %>%
+  rownames_to_column("var1") %>%
+  pivot_longer(cols = -var1, names_to = "var2", values_to = "value")
+
+# Visit 2, Yes
+corr_v2_yes = cor(df_scfa_v2 %>%
+                    filter(wheezing == "Yes") %>%
+                    dplyr::select(-wheezing)) 
+corr_v2_yes[is.na(corr_v2_yes)] = 0
+df_corr_v2_yes = as.data.frame(corr_v2_yes) %>%
+  rownames_to_column("var1") %>%
+  pivot_longer(cols = -var1, names_to = "var2", values_to = "value")
+```
+
+## p-values
+
+```{r}
+scfa_len = length(scfa_list)
+
+# No vs. Yes at visit 1
+df_v1_list = list(no = df_v1 %>%
+                    filter(wheezing == "No"),
+                  yes = df_v1 %>%
+                    filter(wheezing == "Yes"))
+
+mat_p_v1 = matrix(NA, nrow = scfa_len, ncol = scfa_len)
 colnames(mat_p_v1) = scfa_list
 rownames(mat_p_v1) = scfa_list
-for (i in seq_along(scfa_list[-1])) {
-  scfa1 = scfa_list[i]
-  for (j in seq.int(from = i + 1, to = length(scfa_list))) {
+
+for (i in seq_len(scfa_len - 1)) {
+  for (j in seq(i + 1, scfa_len)) {
+    scfa1 = scfa_list[i]
     scfa2 = scfa_list[j]
-    p_val = fisher_z(data = df_scfa_v1, var1 = scfa1, var2 = scfa2, group = "wheezing")
-    if (is.na(p_val)) p_val = 1
-    mat_p_v1[i, j] = p_val
+    co_form = as.formula(paste0("~", scfa1, "+", scfa2, "|", scfa1, "+", scfa2))
+    res_indep = cocor(formula = co_form, data = df_v1_list)
+    mat_p_v1[i, j] = res_indep@fisher1925$p.value
   }
 }
+
 diag(mat_p_v1) = 1
 mat_p_v1[lower.tri(mat_p_v1)] = t(mat_p_v1)[lower.tri(mat_p_v1)]
 df_p_v1 = as.data.frame(mat_p_v1) %>%
   rownames_to_column("var1") %>%
   pivot_longer(cols = -var1, names_to = "var2", values_to = "pvalue")
 
-df_corr1 = as.data.frame(corr1) %>%
-  rownames_to_column("var1") %>%
-  pivot_longer(cols = -var1, names_to = "var2", values_to = "value")
-df_fig1 = df_corr1 %>%
-  left_join(df_p_v1, by = c("var1", "var2")) %>%
-  mutate(text_color = ifelse(pvalue < 0.05, "1", "0"))
+# No vs. Yes at visit 2
+df_v2_list = list(no = df_v2 %>%
+                    filter(wheezing == "No"),
+                  yes = df_v2 %>%
+                    filter(wheezing == "Yes"))
 
-p_heat1 = df_fig1 %>%
-  ggplot(aes(x = var1, y = var2, fill = value)) +
-  geom_tile(color = "black") +
-  geom_text(aes(label = round(value, 2), color = text_color)) +
-  scale_color_manual(values = c("grey60", "blue")) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       name = NULL) +
-  labs(x = NULL, y = NULL, title = "Wheezing = No") +
-  theme_minimal() +
-  guides(color = FALSE) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1),
-        panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank(),
-        plot.title = element_text(hjust = 0.5))
-
-df_corr2 = as.data.frame(corr2) %>%
-  rownames_to_column("var1") %>%
-  pivot_longer(cols = -var1, names_to = "var2", values_to = "value")
-df_fig2 = df_corr2 %>%
-  left_join(df_p_v1, by = c("var1", "var2")) %>%
-  mutate(text_color = ifelse(pvalue < 0.05, "1", "0"))
-
-p_heat2 = df_fig2 %>%
-  ggplot(aes(x = var1, y = var2, fill = value)) +
-  geom_tile(color = "black") +
-  geom_text(aes(label = round(value, 2), color = text_color)) +
-  scale_color_manual(values = c("grey60", "blue")) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       name = NULL) +
-  labs(x = NULL, y = NULL, title = "Wheezing = Yes") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1),
-        panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank(),
-        plot.title = element_text(hjust = 0.5))
-
-p_heat_v1 = ggarrange(p_heat1, p_heat2, common.legend = TRUE, legend = "right")
-p_heat_v1
-ggsave("../results/figures/main_heatmap_v1.jpeg", width = 10, height = 5, dpi = 100)
-ggsave("../results/figures/main_heatmap_v1.pdf", width = 10, height = 5)
-```
-
-## At 28 weeks
-
-```{r, fig.width=10}
-scfa_list = c("Acetic", "Propionic", "Isobutyric", 
-              "Butyric", "Isovaleric", "Valeric")
-df_scfa = df_v2 %>%
-  dplyr::select(wheezing, any_of(scfa_list))
-
-corr1 = cor(df_scfa %>%
-              filter(wheezing == "No") %>%
-              dplyr::select(-wheezing)) 
-corr1[is.na(corr1)] = 0
-
-corr2 = cor(df_scfa %>%
-              filter(wheezing == "Yes") %>%
-              dplyr::select(-wheezing)) 
-corr2[is.na(corr2)] = 0
-
-mat_p_v2 = matrix(NA, nrow = length(scfa_list), ncol = length(scfa_list))
+mat_p_v2 = matrix(NA, nrow = scfa_len, ncol = scfa_len)
 colnames(mat_p_v2) = scfa_list
 rownames(mat_p_v2) = scfa_list
-for (i in seq_along(scfa_list[-1])) {
-  scfa1 = scfa_list[i]
-  for (j in seq.int(from = i + 1, to = length(scfa_list))) {
+
+for (i in seq_len(scfa_len - 1)) {
+  for (j in seq(i + 1, scfa_len)) {
+    scfa1 = scfa_list[i]
     scfa2 = scfa_list[j]
-    p_val = fisher_z(data = df_scfa, var1 = scfa1, var2 = scfa2, group = "wheezing")
-    if (is.na(p_val)) p_val = 0
-    mat_p_v2[i, j] = p_val
+    co_form = as.formula(paste0("~", scfa1, "+", scfa2, "|", scfa1, "+", scfa2))
+    res_indep = cocor(formula = co_form, data = df_v2_list)
+    mat_p_v2[i, j] = res_indep@fisher1925$p.value
   }
 }
+
 diag(mat_p_v2) = 1
 mat_p_v2[lower.tri(mat_p_v2)] = t(mat_p_v2)[lower.tri(mat_p_v2)]
 df_p_v2 = as.data.frame(mat_p_v2) %>%
   rownames_to_column("var1") %>%
   pivot_longer(cols = -var1, names_to = "var2", values_to = "pvalue")
 
-df_corr1 = as.data.frame(corr1) %>%
-  rownames_to_column("var1") %>%
-  pivot_longer(cols = -var1, names_to = "var2", values_to = "value")
-df_fig1 = df_corr1 %>%
-  left_join(df_p_v2, by = c("var1", "var2")) %>%
-  mutate(text_color = ifelse(pvalue < 0.05, "1", "0"))
+# visit 1 vs. visit 2 within No
+df_no_v1 = df_no %>%
+  filter(visit == "20wks") %>%
+  dplyr::select(Study_ID, any_of(scfa_list))
 
-p_heat1 = df_fig1 %>%
+df_no_v2 = df_no %>%
+  filter(visit == "28wks") %>%
+  dplyr::select(Study_ID, any_of(scfa_list))
+
+df_no_wide = df_no_v1 %>%
+  inner_join(df_no_v2, by = "Study_ID", suffix = c("_v1", "_v2"))
+
+mat_p_no = matrix(NA, nrow = scfa_len, ncol = scfa_len)
+colnames(mat_p_no) = scfa_list
+rownames(mat_p_no) = scfa_list
+
+for (i in seq_len(scfa_len - 1)) {
+  for (j in seq(i + 1, scfa_len)) {
+    scfa1 = scfa_list[i]
+    scfa2 = scfa_list[j]
+    co_form = as.formula(paste0("~", scfa1, "_v1+", scfa2, "_v1|", 
+                                scfa1, "_v2+", scfa2, "_v2"))
+    res_dep_nonoverlap = cocor(formula = co_form, data = df_no_wide)
+    mat_p_no[i, j] = res_dep_nonoverlap@steiger1980$p.value
+  }
+}
+
+diag(mat_p_no) = 1
+mat_p_no[lower.tri(mat_p_no)] = t(mat_p_no)[lower.tri(mat_p_no)]
+df_p_no = as.data.frame(mat_p_no) %>%
+  rownames_to_column("var1") %>%
+  pivot_longer(cols = -var1, names_to = "var2", values_to = "pvalue")
+
+# visit 1 vs. visit 2 within Yes
+df_yes_v1 = df_yes %>%
+  filter(visit == "20wks") %>%
+  dplyr::select(Study_ID, any_of(scfa_list))
+
+df_yes_v2 = df_yes %>%
+  filter(visit == "28wks") %>%
+  dplyr::select(Study_ID, any_of(scfa_list))
+
+df_yes_wide = df_yes_v1 %>%
+  inner_join(df_yes_v2, by = "Study_ID", suffix = c("_v1", "_v2"))
+
+mat_p_yes = matrix(NA, nrow = scfa_len, ncol = scfa_len)
+colnames(mat_p_yes) = scfa_list
+rownames(mat_p_yes) = scfa_list
+
+for (i in seq_len(scfa_len - 1)) {
+  for (j in seq(i + 1, scfa_len)) {
+    scfa1 = scfa_list[i]
+    scfa2 = scfa_list[j]
+    co_form = as.formula(paste0("~", scfa1, "_v1+", scfa2, "_v1|", 
+                                scfa1, "_v2+", scfa2, "_v2"))
+    res_dep_yesyesverlap = cocor(formula = co_form, data = df_yes_wide)
+    mat_p_yes[i, j] = res_dep_yesyesverlap@steiger1980$p.value
+  }
+}
+
+diag(mat_p_yes) = 1
+mat_p_yes[lower.tri(mat_p_yes)] = t(mat_p_yes)[lower.tri(mat_p_yes)]
+df_p_yes = as.data.frame(mat_p_yes) %>%
+  rownames_to_column("var1") %>%
+  pivot_longer(cols = -var1, names_to = "var2", values_to = "pvalue")
+```
+
+## Visualization
+
+```{r}
+# Visit 1, No
+df_p_v1_no = df_p_v1 %>%
+  transmute(var1, var2, p_by_group = pvalue) %>%
+  left_join(df_p_no %>%
+              transmute(var1, var2, p_by_visit = pvalue),
+            by = c("var1", "var2")) %>%
+  dplyr::mutate(p_ind = case_when(
+    p_by_group < 0.05 & p_by_visit > 0.05 ~ "1",
+    p_by_group > 0.05 & p_by_visit < 0.05 ~ "2",
+    p_by_group < 0.05 & p_by_visit < 0.05 ~ "3",
+    TRUE ~ "0"
+  ))
+
+df_fig_v1_no = df_corr_v1_no %>%
+  left_join(df_p_v1_no, by = c("var1", "var2"))
+
+p_heat_v1_no = df_fig_v1_no %>%
   ggplot(aes(x = var1, y = var2, fill = value)) +
   geom_tile(color = "black") +
-  geom_text(aes(label = round(value, 2), color = text_color)) +
-  scale_color_manual(values = c("grey60", "blue")) +
+  geom_text(
+    aes(
+      label = round(value, 2),
+      fontface = ifelse(p_ind == 0, "plain", "bold"),
+      color = p_ind)) +
+  scale_color_manual(values = c("grey80", "chartreuse3", "blue", "red")) +
   scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
                        name = NULL) +
-  labs(x = NULL, y = NULL, title = "Wheezing = No") +
+  labs(x = NULL, y = NULL, title = "Visit 1, Control") +
   theme_minimal() +
   guides(color = FALSE) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1),
@@ -902,31 +973,121 @@ p_heat1 = df_fig1 %>%
         panel.grid.minor = element_blank(),
         plot.title = element_text(hjust = 0.5))
 
-df_corr2 = as.data.frame(corr2) %>%
-  rownames_to_column("var1") %>%
-  pivot_longer(cols = -var1, names_to = "var2", values_to = "value")
-df_fig2 = df_corr2 %>%
-  left_join(df_p_v2, by = c("var1", "var2")) %>%
-  mutate(text_color = ifelse(pvalue < 0.05, "1", "0"))
+# Visit 1, Yes
+df_p_v1_yes = df_p_v1 %>%
+  transmute(var1, var2, p_by_group = pvalue) %>%
+  left_join(df_p_yes %>%
+              transmute(var1, var2, p_by_visit = pvalue),
+            by = c("var1", "var2")) %>%
+  dplyr::mutate(p_ind = case_when(
+    p_by_group < 0.05 & p_by_visit > 0.05 ~ "1",
+    p_by_group > 0.05 & p_by_visit < 0.05 ~ "2",
+    p_by_group < 0.05 & p_by_visit < 0.05 ~ "3",
+    TRUE ~ "0"
+  ))
+df_p_v1_yes$p_ind = factor(df_p_v1_yes$p_ind, levels = c("0", "1", "2", "3"))
+df_fig_v1_yes = df_corr_v1_yes %>%
+  left_join(df_p_v1_yes, by = c("var1", "var2"))
 
-p_heat2 = df_fig2 %>%
+p_heat_v1_yes = df_fig_v1_yes %>%
   ggplot(aes(x = var1, y = var2, fill = value)) +
   geom_tile(color = "black") +
-  geom_text(aes(label = round(value, 2), color = text_color)) +
-  scale_color_manual(values = c("grey60", "blue")) +
+  geom_text(
+    aes(
+      label = round(value, 2),
+      fontface = ifelse(p_ind == 0, "plain", "bold"),
+      color = p_ind)) +
+  scale_color_manual(values = c("grey80", "chartreuse3", "blue", "red")) +
   scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
                        name = NULL) +
-  labs(x = NULL, y = NULL, title = "Wheezing = Yes") +
+  labs(x = NULL, y = NULL, title = "Visit 1, Case") +
   theme_minimal() +
+  guides(color = FALSE) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1),
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
         plot.title = element_text(hjust = 0.5))
 
-p_heat_v2 = ggarrange(p_heat1, p_heat2, common.legend = TRUE, legend = "right")
-p_heat_v2
-ggsave("../results/figures/main_heatmap_v2.jpeg", width = 10, height = 5, dpi = 100)
-ggsave("../results/figures/main_heatmap_v2.pdf", width = 10, height = 5)
+# Visit 2, No
+df_p_v2_no = df_p_v2 %>%
+  transmute(var1, var2, p_by_group = pvalue) %>%
+  left_join(df_p_no %>%
+              transmute(var1, var2, p_by_visit = pvalue),
+            by = c("var1", "var2")) %>%
+  dplyr::mutate(p_ind = case_when(
+    p_by_group < 0.05 & p_by_visit > 0.05 ~ "1",
+    p_by_group > 0.05 & p_by_visit < 0.05 ~ "2",
+    p_by_group < 0.05 & p_by_visit < 0.05 ~ "3",
+    TRUE ~ "0"
+  ))
+
+df_fig_v2_no = df_corr_v2_no %>%
+  left_join(df_p_v2_no, by = c("var1", "var2"))
+
+p_heat_v2_no = df_fig_v2_no %>%
+  ggplot(aes(x = var1, y = var2, fill = value)) +
+  geom_tile(color = "black") +
+  geom_text(
+    aes(
+      label = round(value, 2),
+      fontface = ifelse(p_ind == 0, "plain", "bold"),
+      color = p_ind)) +
+  scale_color_manual(values = c("grey80", "chartreuse3", "blue", "red")) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
+                       name = NULL) +
+  labs(x = NULL, y = NULL, title = "Visit 2, Control") +
+  theme_minimal() +
+  guides(color = FALSE) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+
+# Visit 2, Yes
+df_p_v2_yes = df_p_v2 %>%
+  transmute(var1, var2, p_by_group = pvalue) %>%
+  left_join(df_p_yes %>%
+              transmute(var1, var2, p_by_visit = pvalue),
+            by = c("var1", "var2")) %>%
+  dplyr::mutate(p_ind = case_when(
+    p_by_group < 0.05 & p_by_visit > 0.05 ~ "1",
+    p_by_group > 0.05 & p_by_visit < 0.05 ~ "2",
+    p_by_group < 0.05 & p_by_visit < 0.05 ~ "3",
+    TRUE ~ "0"
+  ))
+df_p_v2_yes$p_ind = factor(df_p_v2_yes$p_ind, levels = c("0", "1", "2", "3"))
+df_fig_v2_yes = df_corr_v2_yes %>%
+  left_join(df_p_v2_yes, by = c("var1", "var2"))
+
+p_heat_v2_yes = df_fig_v2_yes %>%
+  ggplot(aes(x = var1, y = var2, fill = value)) +
+  geom_tile(color = "black") +
+  geom_text(
+    aes(
+      label = round(value, 2),
+      fontface = ifelse(p_ind == 0, "plain", "bold"),
+      color = p_ind)) +
+  scale_color_manual(values = c("grey80", "chartreuse3", "blue", "red")) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
+                       name = NULL) +
+  labs(x = NULL, y = NULL, title = "Visit 2, Case") +
+  theme_minimal() +
+  guides(color = FALSE) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+```
+
+## Outputs
+
+```{r, fig.width=12, fig.height=10}
+p_heat = ggarrange(p_heat_v1_no, p_heat_v1_yes,
+                   p_heat_v2_no, p_heat_v2_yes,
+                   common.legend = TRUE, legend = "right")
+p_heat
+ggsave("../results/figures/main_heatmap.jpeg", width = 12, height = 10, dpi = 100)
+ggsave("../results/figures/main_heatmap.pdf", width = 12, height = 10)
 ```
 
 # Session information
