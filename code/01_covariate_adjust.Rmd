@@ -756,7 +756,7 @@ ggsave("../results/figures/main_clme_plot_v2_decrease.jpeg", width = 12, height 
 ggsave("../results/figures/main_clme_plot_v2_decrease.pdf", width = 12, height = 5)
 ```
 
-# 5. Correlations {.tabset}
+# 5. Correlations 
 
 1. SCFAs correlations by the outcome variable (any report of asthma or wheezing since birth).
 
@@ -764,7 +764,9 @@ ggsave("../results/figures/main_clme_plot_v2_decrease.pdf", width = 12, height =
 
 3. Steiger’s z test was used to determine whether two Pearson correlation coefficients are the same or not between time points within the same group.
 
-## Correlations
+## Individual correlations {.tabset}
+
+### Correlations
 
 ```{r}
 scfa_list = c("Acetic", "Propionic", "Isobutyric", 
@@ -811,7 +813,7 @@ df_corr_v2_yes = as.data.frame(corr_v2_yes) %>%
   pivot_longer(cols = -var1, names_to = "var2", values_to = "value")
 ```
 
-## p-values
+### p-values
 
 ```{r}
 scfa_len = length(scfa_list)
@@ -935,7 +937,7 @@ df_p_yes = as.data.frame(mat_p_yes) %>%
   pivot_longer(cols = -var1, names_to = "var2", values_to = "pvalue")
 ```
 
-## Visualization
+### Visualization
 
 ```{r}
 # Visit 1, No
@@ -1079,15 +1081,139 @@ p_heat_v2_yes = df_fig_v2_yes %>%
         plot.title = element_text(hjust = 0.5))
 ```
 
-## Outputs
+### Outputs
 
 ```{r, fig.width=12, fig.height=10}
 p_heat = ggarrange(p_heat_v1_no, p_heat_v1_yes,
                    p_heat_v2_no, p_heat_v2_yes,
                    common.legend = TRUE, legend = "right")
 p_heat
-ggsave("../results/figures/main_heatmap.jpeg", width = 12, height = 10, dpi = 100)
-ggsave("../results/figures/main_heatmap.pdf", width = 12, height = 10)
+ggsave("../results/figures/main_heatmap_ind.jpeg", width = 12, height = 10, dpi = 100)
+ggsave("../results/figures/main_heatmap_ind.pdf", width = 12, height = 10)
+```
+
+## Correlation difference-in-differences
+
+```{r, fig.width=12, fig.height=5}
+# Estimates
+corr_diff_no = corr_v2_no - corr_v1_no
+corr_diff_yes = corr_v2_yes - corr_v1_yes
+corr_did = corr_diff_no - corr_diff_yes
+
+# P-values
+scfa_list = c("Acetic", "Propionic", "Isobutyric", 
+              "Butyric","Isovaleric", "Valeric")
+perm_num = 1000
+corr_did_list = vector("list", length = perm_num)
+for (i in seq_len(perm_num)) {
+  set.seed(i)
+  df_permute = df_merge
+  df_permute$wheezing = sample(df_permute$wheezing, size = nrow(df_permute))
+  
+  df_scfa_v1 = df_permute %>%
+    dplyr::filter(visit == "20wks") %>%
+    dplyr::select(wheezing, any_of(scfa_list))
+  df_scfa_v2 = df_permute %>%
+    dplyr::filter(visit == "28wks") %>%
+    dplyr::select(wheezing, any_of(scfa_list))
+  
+  # No
+  corr_v1_no = cor(df_scfa_v1 %>%
+                     filter(wheezing == "No") %>%
+                     dplyr::select(-wheezing)) 
+  corr_v1_no[is.na(corr_v1_no)] = 0
+  
+  corr_v2_no = cor(df_scfa_v2 %>%
+                     filter(wheezing == "No") %>%
+                     dplyr::select(-wheezing)) 
+  corr_v2_no[is.na(corr_v2_no)] = 0
+  
+  corr_diff_no_i = corr_v2_no - corr_v1_no
+  
+  # Yes
+  corr_v1_yes = cor(df_scfa_v1 %>%
+                      filter(wheezing == "Yes") %>%
+                      dplyr::select(-wheezing)) 
+  corr_v1_yes[is.na(corr_v1_yes)] = 0
+  
+  corr_v2_yes = cor(df_scfa_v2 %>%
+                      filter(wheezing == "Yes") %>%
+                      dplyr::select(-wheezing)) 
+  corr_v2_yes[is.na(corr_v2_yes)] = 0
+  
+  corr_diff_yes_i = corr_v2_yes - corr_v1_yes
+  
+  corr_did_list[[i]] = corr_diff_no_i - corr_diff_yes_i
+}
+
+perm_p_list = lapply(corr_did_list, function(x)  x > abs(corr_did))
+perm_p_1 = Reduce(`+`, perm_p_list) / length(perm_p_list)
+perm_p = 2 * pmin(perm_p_1, 1 - perm_p_1)
+df_p = as.data.frame(perm_p) %>%
+  rownames_to_column("var1") %>%
+  pivot_longer(cols = -var1, names_to = "var2", values_to = "pvalue")
+
+# Visualization
+# No
+df_corr_diff_no = as.data.frame(corr_diff_no) %>%
+  rownames_to_column("var1") %>%
+  pivot_longer(cols = -var1, names_to = "var2", values_to = "value")
+df_fig_diff_no = df_corr_diff_no %>%
+  left_join(df_p, by = c("var1", "var2")) %>%
+  dplyr::mutate(p_ind = ifelse(pvalue < 0.1 & value != 0, "1", "2"))
+
+p_diff_no = df_fig_diff_no %>%
+  ggplot(aes(x = var1, y = var2, fill = value)) +
+  geom_tile(color = "black") +
+  geom_text(
+    aes(
+      label = round(value, 2),
+      fontface = ifelse(p_ind == "1", "bold", "plain"),
+      color = p_ind)) +
+  scale_color_manual(values = c("chartreuse3", "grey60")) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
+                       name = NULL) +
+  labs(x = NULL, y = NULL, title = "Correlation Differences: Control") +
+  theme_minimal() +
+  guides(color = FALSE) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+
+# Yes
+df_corr_diff_yes = as.data.frame(corr_diff_yes) %>%
+  rownames_to_column("var1") %>%
+  pivot_longer(cols = -var1, names_to = "var2", values_to = "value")
+df_fig_diff_yes = df_corr_diff_yes %>%
+  left_join(df_p, by = c("var1", "var2")) %>%
+  dplyr::mutate(p_ind = ifelse(pvalue < 0.1 & value != 0, "1", "2"))
+
+p_diff_yes = df_fig_diff_yes %>%
+  ggplot(aes(x = var1, y = var2, fill = value)) +
+  geom_tile(color = "black") +
+  geom_text(
+    aes(
+      label = round(value, 2),
+      fontface = ifelse(p_ind == "1", "bold", "plain"),
+      color = p_ind)) +
+  scale_color_manual(values = c("chartreuse3", "grey60")) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
+                       name = NULL) +
+  labs(x = NULL, y = NULL, title = "Correlation Differences: Case") +
+  theme_minimal() +
+  guides(color = FALSE) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+
+# Outputs
+p_heat_did = ggarrange(p_diff_no, p_diff_yes, 
+                       common.legend = TRUE, legend = "right")
+p_heat_did
+ggsave("../results/figures/main_heatmap_did.jpeg", width = 12, height = 5, dpi = 100)
+ggsave("../results/figures/main_heatmap_did.pdf", width = 12, height = 5)
 ```
 
 # Session information
